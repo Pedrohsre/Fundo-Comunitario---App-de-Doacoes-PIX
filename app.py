@@ -79,7 +79,7 @@ def qr_to_bytes(payload: str) -> bytes:
 
 # ── Página ────────────────────────────────────
 st.set_page_config(
-    page_title="Servidor de Mine",
+    page_title="Palworld 1.0",
     page_icon=None,
     layout="centered",
 )
@@ -104,7 +104,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Cabeçalho
-st.markdown(f'<h1 class="main-title">Servidor de Mine</h1>', unsafe_allow_html=True)
+st.markdown(f'<h1 class="main-title">Palworld 1.0</h1>', unsafe_allow_html=True)
 st.markdown(f'<p class="sub-title">Arrecadação de {MES_REFERENCIA}</p>', unsafe_allow_html=True)
 st.divider()
 
