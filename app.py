@@ -11,8 +11,8 @@ from datetime import datetime
 CHAVE_PIX       = "bc01cf21-b50b-4285-b880-825822031cf3"          # CPF, CNPJ, e-mail, telefone ou chave aleatória
 NOME_RECEBEDOR  = "Pedro R"    # max 25 caracteres
 CIDADE_PIX      = "teste"            # max 15 caracteres
-META_MENSAL     = 83.91                # valor total que precisa ser arrecadado
-MES_REFERENCIA  = "Abril/2026"           # aparece no cabeçalho
+META_MENSAL     = 1                # valor total que precisa ser arrecadado
+MES_REFERENCIA  = "Julho/2026"           # aparece no cabeçalho
 # ──────────────────────────────────────────────
 
 DONATIONS_FILE = "donations.json"
