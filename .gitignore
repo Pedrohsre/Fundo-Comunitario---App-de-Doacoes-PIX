@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 donations.json
 campaigns.json
+.streamlit/secrets.toml
 .streamlit/

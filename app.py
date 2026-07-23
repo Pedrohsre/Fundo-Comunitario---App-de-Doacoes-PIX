@@ -14,42 +14,148 @@ NOME_RECEBEDOR  = "Pedro R"
 CIDADE_PIX      = "teste"
 # ──────────────────────────────────────────────
 
-DATA_FILE   = "campaigns.json"
 LEGACY_FILE = "donations.json"
 
-# ── Persistência ──────────────────────────────
-def _empty_state():
-    return {"active_id": None, "campaigns": []}
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+SHEET_CAMPAIGNS = "campaigns"
+SHEET_DONATIONS = "donations"
+CAMPAIGNS_HEADER = ["id", "nome", "meta", "dia_referencia", "status", "criada_em", "fechada_em", "ativa"]
+DONATIONS_HEADER = ["campaign_id", "nome", "valor", "data_hora", "observacao"]
 
+# ── Google Sheets backend ─────────────────────
+def _secrets_ready() -> bool:
+    try:
+        return (
+            "gcp_service_account" in st.secrets
+            and "gsheets" in st.secrets
+            and "spreadsheet_id" in st.secrets["gsheets"]
+        )
+    except Exception:
+        return False
+
+@st.cache_resource(show_spinner=False)
+def _open_book():
+    from google.oauth2.service_account import Credentials
+    import gspread
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=SCOPES,
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(st.secrets["gsheets"]["spreadsheet_id"])
+
+def _ensure_ws(book, title, header):
+    try:
+        ws = book.worksheet(title)
+    except Exception:
+        ws = book.add_worksheet(title=title, rows=1000, cols=len(header))
+        ws.update(values=[header], range_name="A1")
+        return ws
+    # Rewrite header if it changed (data rows below untouched)
+    if ws.row_values(1) != header:
+        ws.update(values=[header], range_name="A1")
+    return ws
+
+def _row_ativa(v) -> bool:
+    return str(v).strip().lower() in ("sim", "true", "1", "yes", "y", "x")
+
+def load_state() -> dict:
+    book = _open_book()
+    ws_c = _ensure_ws(book, SHEET_CAMPAIGNS, CAMPAIGNS_HEADER)
+    ws_d = _ensure_ws(book, SHEET_DONATIONS, DONATIONS_HEADER)
+
+    rows_c = ws_c.get_all_records()
+    rows_d = ws_d.get_all_records()
+
+    campaigns, active_id = [], None
+    for r in rows_c:
+        cid = str(r.get("id", "")).strip()
+        if not cid:
+            continue
+        campaigns.append({
+            "id":             cid,
+            "nome":           str(r.get("nome", "")),
+            "meta":           float(r.get("meta") or 0),
+            "dia_referencia": str(r.get("dia_referencia", "")),
+            "status":         str(r.get("status", "ativa")),
+            "criada_em":      str(r.get("criada_em", "")),
+            "fechada_em":     str(r.get("fechada_em", "")) or None,
+            "donations":      [],
+        })
+        if _row_ativa(r.get("ativa", "")):
+            active_id = cid
+
+    by_id = {c["id"]: c for c in campaigns}
+    for r in rows_d:
+        cid = str(r.get("campaign_id", "")).strip()
+        if cid in by_id:
+            by_id[cid]["donations"].append({
+                "nome":       str(r.get("nome", "")),
+                "valor":      float(r.get("valor") or 0),
+                "data_hora":  str(r.get("data_hora", "")),
+                "observacao": str(r.get("observacao", "")),
+            })
+
+    # Migração one-shot do donations.json antigo, se existir e sheet estiver vazio
+    if not campaigns and os.path.exists(LEGACY_FILE):
+        with open(LEGACY_FILE, "r", encoding="utf-8") as f:
+            old = json.load(f)
+        cid = "palworld-1-0"
+        campaigns = [{
+            "id":             cid,
+            "nome":           "Palworld 1.0",
+            "meta":           95.90,
+            "dia_referencia": "Julho/2026",
+            "status":         "ativa",
+            "criada_em":      datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "fechada_em":     None,
+            "donations":      list(old),
+        }]
+        active_id = cid
+        save_state({"active_id": active_id, "campaigns": campaigns})
+
+    return {"active_id": active_id, "campaigns": campaigns}
+
+def save_state(state: dict) -> None:
+    book = _open_book()
+    ws_c = _ensure_ws(book, SHEET_CAMPAIGNS, CAMPAIGNS_HEADER)
+    ws_d = _ensure_ws(book, SHEET_DONATIONS, DONATIONS_HEADER)
+
+    rows_c = [CAMPAIGNS_HEADER]
+    for c in state["campaigns"]:
+        rows_c.append([
+            c.get("id", ""),
+            c.get("nome", ""),
+            c.get("meta", 0),
+            c.get("dia_referencia", ""),
+            c.get("status", ""),
+            c.get("criada_em", ""),
+            c.get("fechada_em") or "",
+            "sim" if c["id"] == state.get("active_id") else "",
+        ])
+
+    rows_d = [DONATIONS_HEADER]
+    for c in state["campaigns"]:
+        for d in c.get("donations", []):
+            rows_d.append([
+                c["id"],
+                d.get("nome", ""),
+                d.get("valor", 0),
+                d.get("data_hora", ""),
+                d.get("observacao", ""),
+            ])
+
+    ws_c.clear()
+    ws_c.update(values=rows_c, range_name="A1")
+    ws_d.clear()
+    ws_d.update(values=rows_d, range_name="A1")
+
+# ── Helpers de estado ─────────────────────────
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return slug or datetime.now().strftime("campanha-%Y%m%d%H%M%S")
-
-def load_state():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    # Migração do formato antigo (donations.json)
-    if os.path.exists(LEGACY_FILE):
-        with open(LEGACY_FILE, "r", encoding="utf-8") as f:
-            old = json.load(f)
-        campaign = {
-            "id":             "palworld-1-0",
-            "nome":           "Palworld 1.0",
-            "meta":           95.90,
-            "mes_referencia": "Julho/2026",
-            "status":         "ativa",
-            "criada_em":      datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "donations":      old,
-        }
-        state = {"active_id": campaign["id"], "campaigns": [campaign]}
-        save_state(state)
-        return state
-    return _empty_state()
-
-def save_state(state):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
 
 def get_active(state):
     for c in state["campaigns"]:
@@ -149,7 +255,45 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-state = load_state()
+# ── Guard: credenciais do Google Sheets ───────
+if not _secrets_ready():
+    st.markdown('<h1 class="main-title">Fundo Comunitário</h1>', unsafe_allow_html=True)
+    st.error("Google Sheets não configurado.")
+    st.markdown("""
+Configure `.streamlit/secrets.toml` (localmente) ou os *Secrets* no Streamlit Cloud com:
+
+```toml
+[gsheets]
+spreadsheet_id = "ID_DA_SUA_PLANILHA"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "..."
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+client_email = "...@....iam.gserviceaccount.com"
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "..."
+universe_domain = "googleapis.com"
+```
+
+Passos rápidos:
+1. Crie um projeto em [console.cloud.google.com](https://console.cloud.google.com) e ative as APIs **Google Sheets** e **Google Drive**.
+2. Crie uma *Service Account*, gere uma chave JSON e cole os campos acima em `secrets.toml`.
+3. Crie uma planilha no Google Sheets, copie o `spreadsheet_id` da URL, e compartilhe a planilha com o `client_email` da service account (permissão de Editor).
+4. Reinicie o app.
+""")
+    st.stop()
+
+# ── Carregar estado ───────────────────────────
+try:
+    state = load_state()
+except Exception as e:
+    st.error(f"Falha ao ler Google Sheets: {e}")
+    st.stop()
 
 # ── Sidebar: gestão de campanhas ──────────────
 with st.sidebar:
@@ -164,7 +308,7 @@ with st.sidebar:
         with st.form("form_nova_campanha", clear_on_submit=True):
             novo_nome = st.text_input("Nome do jogo / campanha", placeholder="Ex.: Palworld 2.0")
             nova_meta = st.number_input("Meta (R$)", min_value=1.0, value=100.0, step=10.0, format="%.2f")
-            novo_mes  = st.text_input("Mês de referência", value=datetime.now().strftime("%m/%Y"))
+            novo_dia  = st.text_input("Dia de referência", value=datetime.now().strftime("%d/%m/%Y"))
             st.caption("Se já houver campanha ativa, ela será encerrada e permanecerá no histórico.")
             criar = st.form_submit_button("Criar e ativar", use_container_width=True)
         if criar:
@@ -172,19 +316,19 @@ with st.sidebar:
                 st.error("Informe o nome da campanha.")
             else:
                 if active:
-                    active["status"]    = "encerrada"
+                    active["status"]     = "encerrada"
                     active["fechada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
                 cid = unique_id(state, _slugify(novo_nome))
-                nova = {
+                state["campaigns"].append({
                     "id":             cid,
                     "nome":           novo_nome.strip(),
                     "meta":           float(nova_meta),
-                    "mes_referencia": novo_mes.strip(),
+                    "dia_referencia": novo_dia.strip(),
                     "status":         "ativa",
                     "criada_em":      datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "fechada_em":     None,
                     "donations":      [],
-                }
-                state["campaigns"].append(nova)
+                })
                 state["active_id"] = cid
                 save_state(state)
                 st.session_state.pop("pending", None)
@@ -198,12 +342,12 @@ with st.sidebar:
                     "Meta (R$)", min_value=1.0,
                     value=float(active["meta"]), step=10.0, format="%.2f",
                 )
-                edit_mes  = st.text_input("Mês de referência", value=active["mes_referencia"])
+                edit_dia  = st.text_input("Dia de referência", value=active["dia_referencia"])
                 salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
             if salvar:
                 active["nome"]           = edit_nome.strip() or active["nome"]
                 active["meta"]           = float(edit_meta)
-                active["mes_referencia"] = edit_mes.strip()
+                active["dia_referencia"] = edit_dia.strip()
                 save_state(state)
                 st.rerun()
 
@@ -216,6 +360,8 @@ with st.sidebar:
                 save_state(state)
                 st.session_state.pop("pending", None)
                 st.rerun()
+
+    st.caption("Armazenamento: Google Sheets")
 
 # ── Área principal ────────────────────────────
 active = get_active(state)
@@ -231,7 +377,7 @@ else:
     progresso = min(total / meta, 1.0) if meta > 0 else 0.0
 
     st.markdown(f'<h1 class="main-title">{active["nome"]}</h1>', unsafe_allow_html=True)
-    st.markdown(f'<p class="sub-title">Arrecadação de {active["mes_referencia"]}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="sub-title">Arrecadação de {active["dia_referencia"]}</p>', unsafe_allow_html=True)
     st.divider()
 
     st.markdown(f"""
@@ -305,7 +451,6 @@ else:
                 "campaign_id": active["id"],
             }
 
-    # ── Confirmação (fora do form) ────────────
     pending = st.session_state.get("pending")
     if pending and pending.get("campaign_id") == active["id"]:
         if st.button(
@@ -327,8 +472,7 @@ else:
 
     st.divider()
 
-    # ── Histórico da campanha ativa ───────────
-    st.subheader(f"Histórico de contribuições — {active['mes_referencia']}")
+    st.subheader(f"Histórico de contribuições — {active['dia_referencia']}")
     if donations:
         render_donation_list(donations)
     else:
@@ -343,7 +487,7 @@ if encerradas:
         total_c = sum(d["valor"] for d in c["donations"])
         meta_c  = float(c.get("meta", 0))
         titulo  = (
-            f"{c['nome']} — {c.get('mes_referencia','')}  |  "
+            f"{c['nome']} — {c.get('dia_referencia','')}  |  "
             f"R$ {total_c:,.2f} de R$ {meta_c:,.2f}  ·  {len(c['donations'])} doadores"
         )
         with st.expander(titulo):
