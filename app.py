@@ -10,7 +10,7 @@ from datetime import datetime
 # CONFIG PIX (dados técnicos do recebedor)
 # ──────────────────────────────────────────────
 CHAVE_PIX       = "bc01cf21-b50b-4285-b880-825822031cf3"
-NOME_RECEBEDOR  = "Pedro R"
+NOME_RECEBEDOR  = "Pedro"
 CIDADE_PIX      = "teste"
 # ──────────────────────────────────────────────
 
