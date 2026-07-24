@@ -538,6 +538,6 @@ if encerradas:
 st.divider()
 st.markdown(
     "<p style='text-align:center;color:#94a3b8;font-size:.8rem;'>"
-    "Gerado com carinho · Chave PIX registrada em nome de <b>" + NOME_RECEBEDOR + "</b></p>",
+    "Feito com carinho · Chave PIX registrada em nome de <b>" + NOME_RECEBEDOR + "</b></p>",
     unsafe_allow_html=True,
 )
