@@ -152,6 +152,17 @@ def save_state(state: dict) -> None:
     ws_d.clear()
     ws_d.update(values=rows_d, range_name="A1")
 
+# ── Admin auth ────────────────────────────────
+def _admin_password() -> str | None:
+    try:
+        pwd = st.secrets["admin"]["password"]
+        return str(pwd) if pwd else None
+    except Exception:
+        return None
+
+def is_admin() -> bool:
+    return bool(st.session_state.get("is_admin"))
+
 # ── Helpers de estado ─────────────────────────
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -263,6 +274,9 @@ if not _secrets_ready():
 Configure `.streamlit/secrets.toml` (localmente) ou os *Secrets* no Streamlit Cloud com:
 
 ```toml
+[admin]
+password = "escolha-uma-senha-forte"
+
 [gsheets]
 spreadsheet_id = "ID_DA_SUA_PLANILHA"
 
@@ -304,62 +318,84 @@ with st.sidebar:
     else:
         st.warning("Nenhuma campanha ativa")
 
-    with st.expander("Nova campanha", expanded=(active is None)):
-        with st.form("form_nova_campanha", clear_on_submit=True):
-            novo_nome = st.text_input("Nome do jogo / campanha", placeholder="Ex.: Palworld 2.0")
-            nova_meta = st.number_input("Meta (R$)", min_value=1.0, value=100.0, step=10.0, format="%.2f")
-            novo_dia  = st.text_input("Dia de referência", value=datetime.now().strftime("%d/%m/%Y"))
-            st.caption("Se já houver campanha ativa, ela será encerrada e permanecerá no histórico.")
-            criar = st.form_submit_button("Criar e ativar", use_container_width=True)
-        if criar:
-            if not novo_nome.strip():
-                st.error("Informe o nome da campanha.")
+    admin_pwd = _admin_password()
+
+    if not is_admin():
+        with st.expander("Login admin", expanded=False):
+            if admin_pwd is None:
+                st.error("Senha de admin não configurada em `secrets.toml` (`[admin] password = ...`).")
             else:
-                if active:
+                with st.form("form_admin_login", clear_on_submit=True):
+                    pwd = st.text_input("Senha", type="password")
+                    entrar = st.form_submit_button("Entrar", use_container_width=True)
+                if entrar:
+                    if pwd == admin_pwd:
+                        st.session_state["is_admin"] = True
+                        st.rerun()
+                    else:
+                        st.error("Senha incorreta.")
+    else:
+        st.info("Modo admin")
+        if st.button("Sair do admin", use_container_width=True):
+            st.session_state.pop("is_admin", None)
+            st.rerun()
+
+        with st.expander("Nova campanha", expanded=(active is None)):
+            with st.form("form_nova_campanha", clear_on_submit=True):
+                novo_nome = st.text_input("Nome do jogo / campanha", placeholder="Ex.: Palworld 2.0")
+                nova_meta = st.number_input("Meta (R$)", min_value=1.0, value=100.0, step=10.0, format="%.2f")
+                novo_dia  = st.text_input("Dia de referência", value=datetime.now().strftime("%d/%m/%Y"))
+                st.caption("Se já houver campanha ativa, ela será encerrada e permanecerá no histórico.")
+                criar = st.form_submit_button("Criar e ativar", use_container_width=True)
+            if criar:
+                if not novo_nome.strip():
+                    st.error("Informe o nome da campanha.")
+                else:
+                    if active:
+                        active["status"]     = "encerrada"
+                        active["fechada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    cid = unique_id(state, _slugify(novo_nome))
+                    state["campaigns"].append({
+                        "id":             cid,
+                        "nome":           novo_nome.strip(),
+                        "meta":           float(nova_meta),
+                        "dia_referencia": novo_dia.strip(),
+                        "status":         "ativa",
+                        "criada_em":      datetime.now().strftime("%d/%m/%Y %H:%M"),
+                        "fechada_em":     None,
+                        "donations":      [],
+                    })
+                    state["active_id"] = cid
+                    save_state(state)
+                    st.session_state.pop("pending", None)
+                    st.rerun()
+
+        if active:
+            with st.expander("Editar campanha atual"):
+                with st.form("form_edit_campanha"):
+                    edit_nome = st.text_input("Nome", value=active["nome"])
+                    edit_meta = st.number_input(
+                        "Meta (R$)", min_value=1.0,
+                        value=float(active["meta"]), step=10.0, format="%.2f",
+                    )
+                    edit_dia  = st.text_input("Dia de referência", value=active["dia_referencia"])
+                    salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
+                if salvar:
+                    active["nome"]           = edit_nome.strip() or active["nome"]
+                    active["meta"]           = float(edit_meta)
+                    active["dia_referencia"] = edit_dia.strip()
+                    save_state(state)
+                    st.rerun()
+
+            with st.expander("Encerrar campanha atual"):
+                st.caption("As doações continuam salvas no histórico.")
+                if st.button("Encerrar agora", use_container_width=True):
                     active["status"]     = "encerrada"
                     active["fechada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-                cid = unique_id(state, _slugify(novo_nome))
-                state["campaigns"].append({
-                    "id":             cid,
-                    "nome":           novo_nome.strip(),
-                    "meta":           float(nova_meta),
-                    "dia_referencia": novo_dia.strip(),
-                    "status":         "ativa",
-                    "criada_em":      datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "fechada_em":     None,
-                    "donations":      [],
-                })
-                state["active_id"] = cid
-                save_state(state)
-                st.session_state.pop("pending", None)
-                st.rerun()
-
-    if active:
-        with st.expander("Editar campanha atual"):
-            with st.form("form_edit_campanha"):
-                edit_nome = st.text_input("Nome", value=active["nome"])
-                edit_meta = st.number_input(
-                    "Meta (R$)", min_value=1.0,
-                    value=float(active["meta"]), step=10.0, format="%.2f",
-                )
-                edit_dia  = st.text_input("Dia de referência", value=active["dia_referencia"])
-                salvar = st.form_submit_button("Salvar alterações", use_container_width=True)
-            if salvar:
-                active["nome"]           = edit_nome.strip() or active["nome"]
-                active["meta"]           = float(edit_meta)
-                active["dia_referencia"] = edit_dia.strip()
-                save_state(state)
-                st.rerun()
-
-        with st.expander("Encerrar campanha atual"):
-            st.caption("As doações continuam salvas no histórico.")
-            if st.button("Encerrar agora", use_container_width=True):
-                active["status"]     = "encerrada"
-                active["fechada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-                state["active_id"]   = None
-                save_state(state)
-                st.session_state.pop("pending", None)
-                st.rerun()
+                    state["active_id"]   = None
+                    save_state(state)
+                    st.session_state.pop("pending", None)
+                    st.rerun()
 
     st.caption("Armazenamento: Google Sheets")
 
